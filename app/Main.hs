@@ -7,79 +7,67 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 
 module Main (main) where
 
-import Lib
+import Lib (Message(..), SomeMessage(..), handleSomeMessage, createErrorMessage)
+import SelectLib (startSelect
+                , SelectEnv(..)
+                , Handle(..)
+                , echoHandle
+                , selectInsert
+                , SelectMonad(..)
+                , selectRemove
+                )
 import Data.Aeson as JSON
-import Data.Aeson.Types (Parser)
-import qualified GHC.Generics as G
+import qualified Control.Exception as E
+import Network.Socket
+import Network.Socket.ByteString (send)
+import Control.Monad.Trans.Class (lift)
+import Network.StreamSocket
+import Network.Stream (readLine)
+import qualified Data.ByteString.Char8 as C8
+import qualified Data.ByteString.Lazy as BS
+
+readLine' :: Socket -> IO String
+readLine' sock = do 
+    line <- readLine sock
+    case line of
+        Left _ -> E.throw $ E.AssertionFailed "Error happen in readLine."
+        Right s -> return s
 
 
-data T = A | B
+getline :: Socket -> SelectMonad BS.ByteString
+getline sock = do
+    line <- lift . (fmap BS.fromStrict) . (fmap C8.pack) . readLine' $ sock
+    if line == "" then selectRemove sock >> return ""
+    else return line
+    
+
+vimHandle :: Handle
+vimHandle sock = do 
+    line <- getline sock
+    let message = JSON.decode line :: Maybe SomeMessage
+    let k = case message of
+                Nothing -> createErrorMessage "decode error."
+                Just x -> x
+    let output = C8.unpack . BS.toStrict . handleSomeMessage $ k
+    lift $ send sock (C8.pack (output ++ "\n"))
+    return ()
+    
+
+listenHandle :: Handle
+listenHandle sock = do
+    (conn, _) <- lift $ accept sock
+    selectInsert conn vimHandle
+    {-selectInsert conn echoHandle-}
 
 
-data M (t :: T) where
-  MA :: M 'A
-  MB :: M 'B
-
-data SomeMethod = forall (t::T). SomeMethod (M t)
-data SomeMessage = forall (t::T). SomeMessage (M t) (Param t)
-
-
-instance JSON.FromJSON SomeMessage where
-    parseJSON = withObject "SomeMessage" $ \v -> do
-        method <- v .: "method"
-        param <- v .: "param"
-        SomeMethod m <- JSON.parseJSON method
-        param <- (decodeParam m param)
-        return $ SomeMessage m param
-
-
-instance JSON.FromJSON SomeMethod where
-    parseJSON (JSON.String "A") = return $ SomeMethod MA
-    parseJSON (JSON.String "B") = return $ SomeMethod MB
-
-
--- value of (M t) -> value of (Param t)
-{-decodeParam :: M t -> JSON.Value -> Parser (Param t)-}
-{-decodeParam MA = JSON.parseJSON -}
-{-decodeParam MB = JSON.parseJSON-}
-
-
-data ParamA = ParamA {x :: Int, y :: Int} deriving (G.Generic, Show)
-instance JSON.FromJSON ParamA  where {}
-
-
-data ParamB = ParamB {x :: String, y :: String} deriving (G.Generic, Show)
-instance JSON.FromJSON ParamB where {}
-
-
-type family Param (t::T) where
-    Param 'A = ParamA 
-    Param 'B = ParamB 
-
-
-handle :: M t -> Param t -> IO ()
-handle MA (ParamA x y) = print $ x + y
-handle MB (ParamB x y) = print $ x ++ y
-
-
-func :: SomeMessage -> IO ()
-func (SomeMessage s param) = handle s param
-
+initHandle :: SelectMonad ()
+initHandle = do
+    return ()
 
 main :: IO ()
-main = do 
-    let stringB = "{\"method\": \"B\", \"param\": {\"x\": \"xxx\", \"y\": \"yyy\"}}"
-    let stringA = "{\"method\": \"A\", \"param\": {\"x\": \"1\", \"y\": \"2\"}}"
-    {-let reqs = [SomeMessage MA (ParamA 1 1), SomeMessage MB (ParamB "sdf" "xxx")]-}
-    let message = JSON.decode stringB :: Maybe SomeMessage
-    let k = case message of 
-                Nothing -> error ("decode error." ++ show stringA)
-                Just x -> x
-    let reqs = [k]
-    mconcat $ map func reqs
-
-
+main = startSelect initHandle listenHandle

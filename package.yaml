@@ -35,6 +35,11 @@ ghc-options:
 
 library:
   source-dirs: src
+  dependencies:
+  - aeson
+  - bytestring
+  - vector
+  - text
 
 executables:
   haskell-test-exe:
@@ -47,6 +52,11 @@ executables:
     dependencies:
     - haskell-test
     - aeson
+    - vim-rpc
+    - transformers
+    - network
+    - HTTP
+    - bytestring
 
 tests:
   haskell-test-test:
